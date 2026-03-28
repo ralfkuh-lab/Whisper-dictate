@@ -15,6 +15,8 @@ Diktiertool mit globalem Hotkey (Ctrl+Alt+D) und GUI-Dialog. Nutzt faster-whispe
 - Modell wird asynchron im Hintergrund geladen
 - `_start_recording` / `_wait_for_model` arbeiten zusammen: wenn Modell noch nicht geladen, pollt `_wait_for_model` alle 500ms und ruft dann `_start_recording` erneut auf
 - Aufnahme läuft in eigenem Thread (`_record_loop`), Transkription ebenso (`_transcribe`)
+- `_is_prompt_hallucination` filtert Whisper-Halluzinationen, bei denen nur der initial_prompt wiederholt wird
+- Dialog-Größe skaliert dynamisch mit Bildschirmauflösung (35%/30%, min 650x340)
 
 ## Plattform
 
@@ -24,7 +26,12 @@ Cross-platform (Windows + Linux). Plattform-spezifisch:
 
 ### Linux-Voraussetzungen
 ```
-sudo apt install python3-tk libportaudio2
+sudo apt install python3-tk python3-dev libportaudio2
+```
+
+Für CUDA (optional):
+```
+sudo apt install libcublas12 libcublaslt12 nvidia-cudnn
 ```
 
 ## Entwicklung

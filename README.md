@@ -22,7 +22,13 @@ Lokales Diktiertool mit globalem Hotkey und GUI-Dialog. Nutzt [faster-whisper](h
 ### Linux
 
 ```bash
-sudo apt install python3-tk libportaudio2
+sudo apt install python3-tk python3-dev libportaudio2
+```
+
+Fuer CUDA-Unterstuetzung (NVIDIA GPU):
+
+```bash
+sudo apt install libcublas12 libcublaslt12 nvidia-cudnn
 ```
 
 ## Installation & Start
@@ -62,6 +68,7 @@ Ueber den Zahnrad-Button im Dialog oder direkt in der Konfigurationsdatei:
 | `language`   | Sprache (`de`, `en`, ... oder `""` fuer Auto-Detect) | `de` |
 | `hotkey`     | Globaler Hotkey (pynput-Format)       | `<ctrl>+<alt>+d`  |
 | `device`     | Geraet fuer Inferenz (auto/cpu/cuda)  | `auto`            |
+| `initial_prompt` | Vokabular-Hilfe (kommagetrennte Begriffe) | Fachbegriffe (Git, API, ...) |
 
 ## Autostart
 
