@@ -24,8 +24,10 @@ from pynput import keyboard
 
 # -- Konstanten --
 SAMPLE_RATE = 16000
-DIALOG_WIDTH = 650
-DIALOG_HEIGHT = 340
+DIALOG_WIDTH_RATIO = 0.35   # 35% der Bildschirmbreite
+DIALOG_HEIGHT_RATIO = 0.30  # 30% der Bildschirmhöhe
+DIALOG_MIN_WIDTH = 650
+DIALOG_MIN_HEIGHT = 340
 
 AVAILABLE_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
 AVAILABLE_DEVICES = ["auto", "cpu", "cuda"]
@@ -125,7 +127,7 @@ class DictateApp:
     def _load_model(self):
         from faster_whisper import WhisperModel
         device = self.cfg.get("device", "auto")
-        compute_type = "float16" if device == "cuda" else "int8"
+        compute_type = "int8_float16" if device == "cuda" else "int8"
         self.model = WhisperModel(
             self.cfg["model_size"], device=device, compute_type=compute_type
         )
@@ -189,14 +191,16 @@ class DictateApp:
         self.dialog.attributes("-topmost", True)
         self.dialog.resizable(True, True)
         self.dialog.protocol("WM_DELETE_WINDOW", self._close_dialog)
-        self.dialog.minsize(DIALOG_WIDTH, DIALOG_HEIGHT)
+        self.dialog.minsize(DIALOG_MIN_WIDTH, DIALOG_MIN_HEIGHT)
 
-        # Zentrieren
+        # Größe dynamisch an Bildschirm anpassen
         screen_w = self.dialog.winfo_screenwidth()
         screen_h = self.dialog.winfo_screenheight()
-        x = (screen_w - DIALOG_WIDTH) // 2
-        y = (screen_h - DIALOG_HEIGHT) // 2
-        self.dialog.geometry(f"{DIALOG_WIDTH}x{DIALOG_HEIGHT}+{x}+{y}")
+        dlg_w = max(DIALOG_MIN_WIDTH, int(screen_w * DIALOG_WIDTH_RATIO))
+        dlg_h = max(DIALOG_MIN_HEIGHT, int(screen_h * DIALOG_HEIGHT_RATIO))
+        x = (screen_w - dlg_w) // 2
+        y = (screen_h - dlg_h) // 2
+        self.dialog.geometry(f"{dlg_w}x{dlg_h}+{x}+{y}")
 
         main_frame = tk.Frame(self.dialog, padx=15, pady=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
@@ -412,6 +416,27 @@ class DictateApp:
         self._update_button_states()
         threading.Thread(target=self._transcribe, daemon=True).start()
 
+    def _is_prompt_hallucination(self, text: str) -> bool:
+        """Prüft ob der Text nur aus Wörtern des initial_prompt besteht (Halluzination)."""
+        prompt = self.cfg.get("initial_prompt", "")
+        if not prompt or not text:
+            return False
+        # Prompt-Wörter normalisieren
+        prompt_words = set(
+            w.strip("., ").lower() for w in prompt.replace(",", " ").split()
+            if w.strip("., ")
+        )
+        # Transkribierte Wörter normalisieren
+        text_words = [
+            w.strip("., ").lower() for w in text.split()
+            if w.strip("., ")
+        ]
+        if not text_words:
+            return True
+        # Wenn >80% der Wörter aus dem Prompt stammen, ist es eine Halluzination
+        matches = sum(1 for w in text_words if w in prompt_words)
+        return matches / len(text_words) > 0.8
+
     def _transcribe(self):
         try:
             audio = np.concatenate(self.audio_chunks, axis=0)
@@ -424,9 +449,15 @@ class DictateApp:
             lang = self.cfg["language"] or None
             prompt = self.cfg.get("initial_prompt", "") or None
             segments, info = self.model.transcribe(
-                tmp_path, language=lang, beam_size=5, initial_prompt=prompt
+                tmp_path, language=lang, beam_size=5, initial_prompt=prompt,
+                no_speech_threshold=0.6, log_prob_threshold=-1.0,
+                hallucination_silence_threshold=2.0,
             )
             text = " ".join(seg.text.strip() for seg in segments)
+
+            # Halluzinierte Prompt-Wiederholungen filtern
+            if self._is_prompt_hallucination(text):
+                text = ""
 
             Path(tmp_path).unlink(missing_ok=True)
 
