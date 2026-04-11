@@ -64,11 +64,12 @@ Ueber den Zahnrad-Button im Dialog oder direkt in der Konfigurationsdatei:
 
 | Einstellung  | Beschreibung                          | Default           |
 |-------------|---------------------------------------|-------------------|
-| `model_size` | Whisper-Modell (tiny/base/small/medium/large-v3) | `medium`  |
+| `model_size` | Whisper-Modell (tiny/base/small/medium/large-v3/large-v3-turbo) | `medium`  |
 | `language`   | Sprache (`de`, `en`, ... oder `""` fuer Auto-Detect) | `de` |
 | `hotkey`     | Globaler Hotkey (pynput-Format)       | `<ctrl>+<alt>+d`  |
 | `device`     | Geraet fuer Inferenz (auto/cpu/cuda)  | `auto`            |
 | `initial_prompt` | Vokabular-Hilfe (kommagetrennte Begriffe) | Fachbegriffe (Git, API, ...) |
+| `cpu_threads` | Anzahl CPU-Threads fuer Transkription (0 = auto) | `0` |
 
 ## Autostart
 

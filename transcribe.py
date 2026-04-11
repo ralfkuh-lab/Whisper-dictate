@@ -27,7 +27,7 @@ def transcribe(file_path: str, model_size: str = "medium", language: str | None 
     print(f"Transkribiere '{path.name}'...")
     start = time.time()
 
-    segments, info = model.transcribe(str(path), language=language, beam_size=5)
+    segments, info = model.transcribe(str(path), language=language, beam_size=5, vad_filter=True)
 
     print(f"Erkannte Sprache: {info.language} ({info.language_probability:.0%})")
     print("-" * 60)
@@ -70,7 +70,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Verwendung: uv run transcribe.py <audio/video-datei> [modell] [sprache]")
         print()
-        print("Modelle:  tiny, base, small, medium (Standard), large-v3")
+        print("Modelle:  tiny, base, small, medium (Standard), large-v3, large-v3-turbo")
         print("Sprache:  de, en, fr, ... (auto-detect wenn leer)")
         print()
         print("Beispiele:")

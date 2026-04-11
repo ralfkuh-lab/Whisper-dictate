@@ -29,7 +29,7 @@ DIALOG_HEIGHT_RATIO = 0.30  # 30% der Bildschirmhöhe
 DIALOG_MIN_WIDTH = 650
 DIALOG_MIN_HEIGHT = 340
 
-AVAILABLE_MODELS = ["tiny", "base", "small", "medium", "large-v3"]
+AVAILABLE_MODELS = ["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"]
 AVAILABLE_DEVICES = ["auto", "cpu", "cuda"]
 
 # -- Konfiguration --
@@ -41,6 +41,7 @@ DEFAULT_CONFIG = {
     "device": "auto",
     "initial_prompt": "Git, Commit, Push, Pull, Merge, Branch, Claude Code, Repository, "
     "API, Token, Frontend, Backend, Deploy, Release, Sprint, Ticket",
+    "cpu_threads": 0,
 }
 
 
@@ -128,8 +129,10 @@ class DictateApp:
         from faster_whisper import WhisperModel
         device = self.cfg.get("device", "auto")
         compute_type = "int8_float16" if device == "cuda" else "int8"
+        cpu_threads = self.cfg.get("cpu_threads", 0)
         self.model = WhisperModel(
-            self.cfg["model_size"], device=device, compute_type=compute_type
+            self.cfg["model_size"], device=device, compute_type=compute_type,
+            cpu_threads=cpu_threads or 0,
         )
         self.model_loaded = True
 
@@ -452,6 +455,7 @@ class DictateApp:
                 tmp_path, language=lang, beam_size=5, initial_prompt=prompt,
                 no_speech_threshold=0.6, log_prob_threshold=-1.0,
                 hallucination_silence_threshold=2.0,
+                vad_filter=True,
             )
             text = " ".join(seg.text.strip() for seg in segments)
 
@@ -577,37 +581,51 @@ class DictateApp:
         )
         device_combo.grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(0, 8))
 
+        # -- CPU-Threads --
+        tk.Label(frame, text="CPU-Threads:", font=FONT_NORMAL).grid(
+            row=2, column=0, sticky="w", pady=(0, 8)
+        )
+        threads_var = tk.StringVar(value=str(self.cfg.get("cpu_threads", 0)))
+        threads_spin = tk.Spinbox(
+            frame, textvariable=threads_var, from_=0, to=32,
+            width=5, font=FONT_NORMAL,
+        )
+        threads_spin.grid(row=2, column=1, sticky="w", padx=(10, 0), pady=(0, 8))
+        tk.Label(frame, text="(0 = auto)", font=FONT_STATUS, fg="#888").grid(
+            row=2, column=2, sticky="w", padx=(4, 0), pady=(0, 8)
+        )
+
         # -- Sprache --
         tk.Label(frame, text="Sprache:", font=FONT_NORMAL).grid(
-            row=2, column=0, sticky="w", pady=(0, 8)
+            row=3, column=0, sticky="w", pady=(0, 8)
         )
         lang_var = tk.StringVar(value=self.cfg["language"] or "")
         lang_entry = tk.Entry(frame, textvariable=lang_var, width=20, font=FONT_NORMAL)
-        lang_entry.grid(row=2, column=1, sticky="w", padx=(10, 0), pady=(0, 8))
+        lang_entry.grid(row=3, column=1, sticky="w", padx=(10, 0), pady=(0, 8))
         tk.Label(frame, text="(leer = auto)", font=FONT_STATUS, fg="#888").grid(
-            row=2, column=2, sticky="w", padx=(4, 0), pady=(0, 8)
+            row=3, column=2, sticky="w", padx=(4, 0), pady=(0, 8)
         )
 
         # -- Initial Prompt (Vokabular-Hilfe) --
         tk.Label(frame, text="Vokabular:", font=FONT_NORMAL).grid(
-            row=3, column=0, sticky="nw", pady=(0, 8)
+            row=4, column=0, sticky="nw", pady=(0, 8)
         )
         prompt_text = tk.Text(frame, width=25, height=3, font=FONT_NORMAL, wrap=tk.WORD)
         prompt_text.insert("1.0", self.cfg.get("initial_prompt", ""))
-        prompt_text.grid(row=3, column=1, sticky="we", padx=(10, 0), pady=(0, 8))
+        prompt_text.grid(row=4, column=1, sticky="we", padx=(10, 0), pady=(0, 8))
         tk.Label(frame, text="(Begriffe, kommagetrennt)", font=FONT_STATUS, fg="#888").grid(
-            row=3, column=2, sticky="nw", padx=(4, 0), pady=(0, 8)
+            row=4, column=2, sticky="nw", padx=(4, 0), pady=(0, 8)
         )
 
         # -- Hotkey --
         tk.Label(frame, text="Hotkey:", font=FONT_NORMAL).grid(
-            row=4, column=0, sticky="w", pady=(0, 8)
+            row=5, column=0, sticky="w", pady=(0, 8)
         )
         hotkey_var = tk.StringVar(value=self.cfg["hotkey"])
         hotkey_entry = tk.Entry(
             frame, textvariable=hotkey_var, width=20, font=FONT_NORMAL
         )
-        hotkey_entry.grid(row=4, column=1, sticky="w", padx=(10, 0), pady=(0, 8))
+        hotkey_entry.grid(row=5, column=1, sticky="w", padx=(10, 0), pady=(0, 8))
 
         # Hotkey-Capture: Tastenkombination aufzeichnen
         captured_keys: set[str] = set()
@@ -647,11 +665,11 @@ class DictateApp:
 
         # -- Fehler-Label --
         error_label = tk.Label(frame, text="", font=FONT_STATUS, fg="#cc0000")
-        error_label.grid(row=5, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        error_label.grid(row=6, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         # -- Buttons --
         btn_frame = tk.Frame(frame)
-        btn_frame.grid(row=6, column=0, columnspan=3, sticky="e", pady=(12, 0))
+        btn_frame.grid(row=7, column=0, columnspan=3, sticky="e", pady=(12, 0))
 
         def _save():
             new_hotkey = hotkey_var.get().strip()
@@ -659,6 +677,7 @@ class DictateApp:
             new_device = device_var.get()
             new_lang = lang_var.get().strip() or ""
             new_prompt = prompt_text.get("1.0", "end-1c").strip()
+            new_threads = int(threads_var.get() or 0)
 
             # Hotkey validieren
             try:
@@ -670,6 +689,7 @@ class DictateApp:
             model_changed = (
                 new_model != self.cfg["model_size"]
                 or new_device != self.cfg.get("device", "auto")
+                or new_threads != self.cfg.get("cpu_threads", 0)
             )
 
             self.cfg["model_size"] = new_model
@@ -677,6 +697,7 @@ class DictateApp:
             self.cfg["language"] = new_lang
             self.cfg["hotkey"] = new_hotkey
             self.cfg["initial_prompt"] = new_prompt
+            self.cfg["cpu_threads"] = new_threads
             save_config(self.cfg)
 
             if model_changed:

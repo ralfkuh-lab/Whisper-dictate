@@ -49,9 +49,10 @@ Einstellungen werden in einer JSON-Datei gespeichert:
 - Linux: `~/.config/whisper-dictate/config.json`
 
 Konfigurierbare Werte (auch über den Zahnrad-Button im Dialog änderbar):
-- `model_size` — Whisper-Modellgröße (tiny/base/small/medium/large-v3)
+- `model_size` — Whisper-Modellgröße (tiny/base/small/medium/large-v3/large-v3-turbo)
 - `language` — Sprache ("de", "" für auto-detect)
 - `hotkey` — Globaler Hotkey im pynput-Format (z.B. `<ctrl>+<alt>+d`)
 - `initial_prompt` — Vokabular-Hilfe: kommagetrennte Begriffe, die Whisper als Kontext-Hinweis erhält (verbessert Erkennung von Fachbegriffen/Fremdwörtern)
+- `cpu_threads` — Anzahl CPU-Threads für Transkription (0 = auto)
 
 Defaults: siehe `DEFAULT_CONFIG` in `dictate.py`.
