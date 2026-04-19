@@ -13,6 +13,7 @@ import sys
 import platform
 import threading
 import tempfile
+import time
 from pathlib import Path
 
 import tkinter as tk
@@ -111,6 +112,7 @@ class DictateApp:
         self.model_loaded = False
         self.dialog: tk.Toplevel | None = None
         self._pulse_step = 0
+        self._current_level = 0.0  # Peak 0..1 des letzten Audio-Blocks
 
         # GUI-Widget-Referenzen
         self.result_text: tk.Text | None = None
@@ -362,6 +364,8 @@ class DictateApp:
         self.audio_chunks = []
         self.recording = True
         self._pulse_step = 0
+        self._current_level = 0.0
+        self._record_start_time = time.monotonic()
 
         self._record_thread = threading.Thread(target=self._record_loop, daemon=True)
         self._record_thread.start()
@@ -382,12 +386,22 @@ class DictateApp:
     def _record_loop(self):
         """Blockierende Aufnahme in eigenem Thread."""
         try:
+            blocks_read = 0
             with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32") as stream:
                 while self.recording:
                     data, overflowed = stream.read(int(SAMPLE_RATE * 0.1))  # 100ms Blöcke
                     self.audio_chunks.append(data.copy())
+                    blocks_read += 1
+                    # Erste 2 Blöcke (200ms) beim Pegel ignorieren — Stream-Init-Artefakte
+                    if blocks_read <= 2 or not data.size:
+                        continue
+                    # Peak + EMA — matcht das GNOME-Klang-Applet (linearer Peak)
+                    peak = float(np.max(np.abs(data)))
+                    self._current_level = 0.5 * self._current_level + 0.5 * peak
         except Exception:
             pass
+        finally:
+            self._current_level = 0.0
 
     def _stop_recording(self):
         if not self.recording:
@@ -497,10 +511,16 @@ class DictateApp:
     def _pulse(self):
         if not self.recording or not self.dialog or not self.dialog.winfo_exists():
             return
-        dots = "." * ((self._pulse_step % 3) + 1)
-        self._set_status(f"Aufnahme{dots}", fg="#cc0000", bold=True)
+        # Linearer Peak — matcht das GNOME-Klang-Applet
+        norm = max(0.0, min(1.0, self._current_level))
+        bar_len = 12
+        filled = int(round(norm * bar_len))
+        bar = "\u2588" * filled + "\u2591" * (bar_len - filled)
+        elapsed = int(time.monotonic() - self._record_start_time)
+        timer = f"{elapsed // 60}:{elapsed % 60:02d}"
+        self._set_status(f"Aufnahme  {timer}  [{bar}]", fg="#cc0000", bold=True)
         self._pulse_step += 1
-        self.dialog.after(500, self._pulse)
+        self.dialog.after(100, self._pulse)
 
     # -- Actions --
 
