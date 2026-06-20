@@ -11,20 +11,30 @@ import json
 import os
 import sys
 import platform
+import signal
+import subprocess
 import threading
-import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import tkinter as tk
 from tkinter import ttk
 import numpy as np
 import sounddevice as sd
-from scipy.io import wavfile
 from pynput import keyboard
 
 # -- Konstanten --
 SAMPLE_RATE = 16000
+
+# STT läuft als eigenständiger headless Server (whisper-server.py), den auch das
+# Local-AI Cockpit starten/stoppen kann (um VRAM für ein großes LLM freizugeben).
+# dictate.py ist nur noch Client dieses Servers — kein eigenes Whisper-Modell mehr.
+STT_HOST = os.environ.get("WHISPER_HOST", "127.0.0.1")
+STT_PORT = int(os.environ.get("WHISPER_PORT", "8350"))
+STT_BASE_URL = f"http://{STT_HOST}:{STT_PORT}"
+_REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 DIALOG_WIDTH_RATIO = 0.35   # 35% der Bildschirmbreite
 DIALOG_HEIGHT_RATIO = 0.30  # 30% der Bildschirmhöhe
 DIALOG_MIN_WIDTH = 650
@@ -108,8 +118,8 @@ class DictateApp:
         self.transcribing = False
         self.audio_chunks: list = []
         self.stream = None
-        self.model = None
-        self.model_loaded = False
+        self.model_loaded = False   # = STT-Server erreichbar & Modell geladen
+        self._server_proc = None    # von uns gestarteter whisper-server.py (für Neustart/Stop)
         self.dialog: tk.Toplevel | None = None
         self._pulse_step = 0
         self._current_level = 0.0  # Peak 0..1 des letzten Audio-Blocks
@@ -121,22 +131,68 @@ class DictateApp:
         self.copy_btn: tk.Button | None = None
         self.cancel_btn: tk.Button | None = None
 
-        # Modell im Hintergrund laden
-        threading.Thread(target=self._load_model, daemon=True).start()
+        # STT-Server sicherstellen (starten, falls nicht erreichbar) — im Hintergrund
+        threading.Thread(target=self._ensure_server, daemon=True).start()
 
         # Hotkey-Listener starten
         self._start_hotkey_listener()
 
-    def _load_model(self):
-        from faster_whisper import WhisperModel
-        device = self.cfg.get("device", "auto")
-        compute_type = "int8_float16" if device == "cuda" else "int8"
-        cpu_threads = self.cfg.get("cpu_threads", 0)
-        self.model = WhisperModel(
-            self.cfg["model_size"], device=device, compute_type=compute_type,
-            cpu_threads=cpu_threads or 0,
+    # -- STT-Server (whisper-server.py) als eigenständiger Prozess --
+
+    def _server_health(self) -> bool:
+        """True, wenn der STT-Server erreichbar ist und das Modell geladen hat."""
+        try:
+            with urllib.request.urlopen(f"{STT_BASE_URL}/health", timeout=2) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return bool(data.get("model_loaded"))
+        except Exception:
+            return False
+
+    def _spawn_server(self):
+        """Startet whisper-server.py headless, detached in eigener Prozessgruppe."""
+        self._server_proc = subprocess.Popen(
+            ["uv", "run", "--directory", _REPO_DIR, "whisper-server.py"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,  # eigene Prozessgruppe → sauber stopp-bar
         )
-        self.model_loaded = True
+
+    def _ensure_server(self):
+        """Stellt sicher, dass der STT-Server läuft. Ist er erreichbar (z.B. vom Cockpit
+        gestartet), wird er einfach genutzt; sonst von uns gestartet und auf /health gewartet."""
+        if self._server_health():
+            self.model_loaded = True
+            return
+        try:
+            self._spawn_server()
+        except FileNotFoundError:
+            self.model_loaded = False
+            return
+        deadline = time.monotonic() + 90  # Modell-Laden dauert einige Sekunden
+        while time.monotonic() < deadline:
+            if self._server_health():
+                self.model_loaded = True
+                return
+            time.sleep(1.0)
+        self.model_loaded = False
+
+    def _stop_spawned_server(self):
+        """Stoppt NUR einen von uns selbst gestarteten Server (Prozessgruppe).
+        Einen extern (Cockpit) verwalteten Server fassen wir nicht an."""
+        proc = self._server_proc
+        self._server_proc = None
+        if proc is None:
+            return
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    def _restart_server(self):
+        """Server neu starten, damit geänderte Config (Modell/Sprache/Prompt) greift."""
+        self._stop_spawned_server()
+        self._ensure_server()
 
     def _start_hotkey_listener(self):
         hotkey_keys = keyboard.HotKey.parse(self.cfg["hotkey"])
@@ -354,7 +410,7 @@ class DictateApp:
     def _start_recording(self):
         if not self.model_loaded:
             self._ensure_dialog()
-            self._set_status("Modell wird geladen, bitte warten...")
+            self._set_status("STT-Server wird gestartet, bitte warten...")
             self._update_button_states()
             self._wait_for_model()
             return
@@ -433,55 +489,42 @@ class DictateApp:
         self._update_button_states()
         threading.Thread(target=self._transcribe, daemon=True).start()
 
-    def _is_prompt_hallucination(self, text: str) -> bool:
-        """Prüft ob der Text nur aus Wörtern des initial_prompt besteht (Halluzination)."""
-        prompt = self.cfg.get("initial_prompt", "")
-        if not prompt or not text:
-            return False
-        # Prompt-Wörter normalisieren
-        prompt_words = set(
-            w.strip("., ").lower() for w in prompt.replace(",", " ").split()
-            if w.strip("., ")
-        )
-        # Transkribierte Wörter normalisieren
-        text_words = [
-            w.strip("., ").lower() for w in text.split()
-            if w.strip("., ")
-        ]
-        if not text_words:
-            return True
-        # Wenn >80% der Wörter aus dem Prompt stammen, ist es eine Halluzination
-        matches = sum(1 for w in text_words if w in prompt_words)
-        return matches / len(text_words) > 0.8
-
     def _transcribe(self):
         try:
-            audio = np.concatenate(self.audio_chunks, axis=0)
-            audio_int16 = (audio * 32767).astype(np.int16)
-
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                tmp_path = f.name
-                wavfile.write(tmp_path, SAMPLE_RATE, audio_int16)
-
-            lang = self.cfg["language"] or None
-            prompt = self.cfg.get("initial_prompt", "") or None
-            segments, info = self.model.transcribe(
-                tmp_path, language=lang, beam_size=5, initial_prompt=prompt,
-                no_speech_threshold=0.6, log_prob_threshold=-1.0,
-                hallucination_silence_threshold=2.0,
-                vad_filter=True,
-            )
-            text = " ".join(seg.text.strip() for seg in segments)
-
-            # Halluzinierte Prompt-Wiederholungen filtern
-            if self._is_prompt_hallucination(text):
-                text = ""
-
-            Path(tmp_path).unlink(missing_ok=True)
-
+            audio = np.concatenate(self.audio_chunks, axis=0).astype(np.float32)
+            text = self._transcribe_via_server(audio)
             self.root.after(0, self._append_result, text)
         except Exception as e:
             self.root.after(0, self._append_result, f"[Fehler: {e}]")
+
+    def _transcribe_via_server(self, audio) -> str:
+        """Schickt rohes float32-PCM (@16k mono) an den headless STT-Server /transcribe.
+        Sprache, VAD und Prompt-Halluzinations-Filter macht der Server (gemeinsame config.json)."""
+        body = audio.tobytes()
+        req = urllib.request.Request(
+            f"{STT_BASE_URL}/transcribe",
+            data=body,
+            headers={"Content-Type": "application/octet-stream"},
+            method="POST",
+        )
+
+        def _post():
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+
+        try:
+            payload = _post()
+        except urllib.error.URLError:
+            # Server evtl. gestoppt (z.B. Cockpit gab VRAM frei) → einmal hochfahren & retry.
+            self.model_loaded = False
+            self._ensure_server()
+            if not self.model_loaded:
+                raise RuntimeError("STT-Server nicht erreichbar (ggf. über Cockpit starten)")
+            payload = _post()
+
+        if isinstance(payload, dict) and payload.get("error"):
+            raise RuntimeError(f"STT-Server: {payload['error']}")
+        return payload.get("text", "") if isinstance(payload, dict) else ""
 
     def _append_result(self, text: str):
         self.transcribing = False
@@ -706,10 +749,12 @@ class DictateApp:
                 error_label.config(text=f"Ungültiger Hotkey: {new_hotkey}")
                 return
 
-            model_changed = (
+            server_cfg_changed = (
                 new_model != self.cfg["model_size"]
                 or new_device != self.cfg.get("device", "auto")
                 or new_threads != self.cfg.get("cpu_threads", 0)
+                or new_lang != self.cfg.get("language")
+                or new_prompt != self.cfg.get("initial_prompt")
             )
 
             self.cfg["model_size"] = new_model
@@ -720,10 +765,11 @@ class DictateApp:
             self.cfg["cpu_threads"] = new_threads
             save_config(self.cfg)
 
-            if model_changed:
-                self.model = None
+            # Der STT-Server liest die Config nur beim Start → neu starten, damit
+            # Modell/Sprache/Prompt greifen (nur falls dictate den Server selbst startete).
+            if server_cfg_changed:
                 self.model_loaded = False
-                threading.Thread(target=self._load_model, daemon=True).start()
+                threading.Thread(target=self._restart_server, daemon=True).start()
 
             settings.destroy()
             self._start_hotkey_listener()
@@ -812,7 +858,9 @@ def main():
         return
 
     root = tk.Tk()
-    DictateApp(root)
+    app = DictateApp(root)
+    # Kein eingebauter HTTP-Server mehr: STT läuft als eigenständiger whisper-server.py
+    # (von dictate sichergestellt oder vom Local-AI Cockpit verwaltet) auf Port 8350.
     root.mainloop()
 
 
