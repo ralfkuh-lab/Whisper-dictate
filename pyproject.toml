@@ -10,4 +10,8 @@ dependencies = [
     "pyperclip>=1.11.0",
     "scipy>=1.17.1",
     "sounddevice>=0.5.5",
+    # HTTP-Server (http_server.py): /transcribe + OpenAI-kompatibler /v1/audio/transcriptions
+    "fastapi>=0.136.0",
+    "uvicorn[standard]>=0.44.0",
+    "python-multipart>=0.0.32",
 ]
